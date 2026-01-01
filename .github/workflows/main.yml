@@ -1,4 +1,4 @@
-name: Ubuntu RDP (Xfce)
+name: Ubuntu RDP (Fixed)
 
 on:
   workflow_dispatch:
@@ -9,130 +9,149 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Sistem Güncelle
+      - name: Sistem Güncelle ve GUI Kur
         run: |
           sudo apt-get update
-          sudo apt-get upgrade -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ubuntu-desktop-minimal xrdp firefox
 
-      - name: Xfce Masaüstü Kur
+      - name: Yeni Kullanıcı Oluştur
         run: |
-          # Xfce (hafif masaüstü) kur
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies
+          # Yeni kullanıcı oluştur (ubuntu kullanıcısı yerine)
+          sudo useradd -m -s /bin/bash -G sudo,adm rdpuser
+          echo "rdpuser:rdppassword123" | sudo chpasswd
           
-          # Ek araçlar
-          sudo apt-get install -y firefox xterm nano
+          # xrdp için oturum ayarla
+          sudo -u rdpuser bash -c 'echo "gnome-session" > /home/rdpuser/.xsession'
+          
+          echo "RDP_USER=rdpuser" >> $env:GITHUB_ENV
+          echo "RDP_PASS=rdppassword123" >> $env:GITHUB_ENV
 
-      - name: RDP Sunucusu Kur (xrdp)
+      - name: RDP Sunucusu Kur ve Ayarla
         run: |
           # xrdp kur
           sudo apt-get install -y xrdp
+          
+          # xrdp config düzenle
+          sudo sed -i 's/username=ask/username=rdpuser/g' /etc/xrdp/xrdp.ini
+          sudo sed -i 's/password=ask/password=rdppassword123/g' /etc/xrdp/xrdp.ini
           
           # xrdp servisini başlat
           sudo systemctl enable xrdp
           sudo systemctl start xrdp
           
-          # Port aç (3389)
+          # Port aç
           sudo ufw allow 3389/tcp
           sudo ufw --force enable
 
-      - name: Xrdp Ayarlarını Düzelt
+      - name: Display Manager Ayarla
         run: |
-          # Xrdp için Xfce oturumu ayarla
-          echo "xfce4-session" > ~/.xsession
-          sudo chmod +x ~/.xsession
+          # LightDM otomatik login ayarla
+          sudo tee /etc/lightdm/lightdm.conf.d/50-autologin.conf << EOF
+          [Seat:*]
+          autologin-user=rdpuser
+          autologin-user-timeout=0
+          user-session=ubuntu
+          EOF
           
-          # Xrdp config düzenle
-          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
-          echo "exec startxfce4" | sudo tee -a /etc/xrdp/startwm.sh
+          # LightDM başlat
+          sudo systemctl start lightdm || true
 
-      - name: Kullanıcı ve Şifre Ayarla
+      - name: NoMachine Kur (Opsiyonel - Tavsiye Edilir)
         run: |
-          # Varsayılan ubuntu kullanıcısının şifresini değiştir
-          echo "ubuntu:ubuntu123" | sudo chpasswd
-          
-          # Veya yeni kullanıcı oluştur
-          sudo useradd -m -s /bin/bash ghuser
-          echo "ghuser:github123" | sudo chpasswd
-          sudo usermod -aG sudo ghuser
-          
-          echo "USER1=ubuntu" >> $env:GITHUB_ENV
-          echo "PASS1=ubuntu123" >> $env:GITHUB_ENV
-          echo "USER2=ghuser" >> $env:GITHUB_ENV
-          echo "PASS2=github123" >> $env:GITHUB_ENV
-
-      - name: NoMachine Kur (Alternatif - Daha İyi)
-        run: |
-          # NoMachine indir ve kur
-          wget https://download.nomachine.com/download/8.10/Linux/nomachine_8.10.1_1_amd64.deb
-          sudo dpkg -i nomachine_*.deb || sudo apt-get install -f -y
-          
-          # NoMachine servisini başlat
+          # NoMachine kur (daha stabil)
+          wget -q https://download.nomachine.com/download/8.10/Linux/nomachine_8.10.1_1_amd64.deb
+          sudo dpkg -i nomachine_*.deb 2>/dev/null || sudo apt-get install -f -y
           sudo systemctl start nxserver
+          
+          # NoMachine için şifre ayarla
+          sudo /usr/NX/bin/nxserver --password rdppassword123
           
           echo "NOMACHINE_INSTALLED=true" >> $env:GITHUB_ENV
 
-      - name: IP ve Bağlantı Bilgilerini Al
+      - name: IP Bilgilerini Al
         run: |
           # IP adreslerini al
           PRIVATE_IP=$(hostname -I | awk '{print $1}')
-          PUBLIC_IP=$(curl -s ifconfig.me)
+          PUBLIC_IP=$(curl -s ifconfig.me || curl -s ipinfo.io/ip || echo "Bilinmiyor")
           
           echo "PRIVATE_IP=$PRIVATE_IP" >> $env:GITHUB_ENV
           echo "PUBLIC_IP=$PUBLIC_IP" >> $env:GITHUB_ENV
-          
-          # Bağlantı portlarını göster
-          echo "RDP_PORT=3389" >> $env:GITHUB_ENV
-          echo "NOMACHINE_PORT=4000" >> $env:GITHUB_ENV
 
-      - name: Display Başlat
+      - name: Bağlantıyı Test Et
         run: |
-          # Display manager başlat
-          sudo systemctl start lightdm || true
+          echo "RDP servisi kontrol ediliyor..."
+          sudo systemctl status xrdp --no-pager
           
-          # X server başlat
-          startxfce4 &
-          sleep 5
+          echo "Port dinleniyor mu?"
+          sudo netstat -tulpn | grep :3389 || echo "Port 3389 dinlenmiyor"
+          
+          echo "Kullanıcı kontrolü..."
+          id rdpuser
 
       - name: Bağlantı Bilgilerini Göster
         run: |
           echo " "
-          echo "╔══════════════════════════════════════════════════╗"
-          echo "║            UBUNTU RDP BAĞLANTI BİLGİLERİ        ║"
-          echo "╠══════════════════════════════════════════════════╣"
-          echo "║ 🌍 Public IP: ${{ env.PUBLIC_IP }}"
-          echo "║ 🏠 Private IP: ${{ env.PRIVATE_IP }}"
-          echo "╠══════════════════════════════════════════════════╣"
-          echo "║ 📌 SEÇENEK 1: XRDP (Windows RDP ile)"
-          echo "║   • Port: 3389"
-          echo "║   • Kullanıcı: ubuntu"
-          echo "║   • Şifre: ubuntu123"
-          echo "║ "
-          echo "║ 📌 SEÇENEK 2: NoMachine (Daha Hızlı)"
-          echo "║   • Port: 4000"
-          echo "║   • Kullanıcı: ghuser"
-          echo "║   • Şifre: github123"
-          echo "╠══════════════════════════════════════════════════╣"
-          echo "║ 🛠️  Komutlar:"
-          echo "║   • Firefox aç: firefox"
-          echo "║   • Terminal: ctrl+alt+t"
-          echo "║   • Çıkış: exit"
-          echo "╚══════════════════════════════════════════════════╝"
+          echo "===================================================="
+          echo "              🖥️  UBUNTU RDP BAĞLANTISI"
+          echo "===================================================="
+          echo "🌍 PUBLIC IP: ${{ env.PUBLIC_IP }}"
+          echo "🏠 PRIVATE IP: ${{ env.PRIVATE_IP }}"
+          echo "👤 KULLANICI: ${{ env.RDP_USER }}"
+          echo "🔐 ŞİFRE: ${{ env.RDP_PASS }}"
+          echo "🔌 PORT: 3389"
           echo " "
+          echo "📌 Windows'ta bağlanmak için:"
+          echo "   1. Windows + R tuşlarına bas"
+          echo "   2. 'mstsc' yaz ve Enter'a bas"
+          echo "   3. IP: ${{ env.PUBLIC_IP }}"
+          echo "   4. Kullanıcı: ${{ env.RDP_USER }}"
+          echo "   5. Şifre: ${{ env.RDP_PASS }}"
+          echo " "
+          echo "📌 CMD'de tek komut:"
+          echo "   mstsc /v:${{ env.PUBLIC_IP }}"
+          echo " "
+          echo "📌 Veya NoMachine ile (daha iyi):"
+          echo "   1. https://www.nomachine.com/ adresinden indir"
+          echo "   2. IP: ${{ env.PUBLIC_IP }}"
+          echo "   3. Port: 4000"
+          echo "   4. Kullanıcı: ${{ env.RDP_USER }}"
+          echo "   5. Şifre: ${{ env.RDP_PASS }}"
+          echo "===================================================="
           echo "⚠️  DİKKAT: Runner 60 dakika sonra otomatik kapanır!"
-          echo "⚠️  İşin bitince workflow'u DURDUR!"
+          echo "⚠️  İş bitince GitHub'da workflow'u DURDUR!"
+          echo "===================================================="
 
-      - name: Bağlantıyı Aktif Tut
+      - name: RDP'yi Aktif Tut
         run: |
-          # Bağlantıları dinle
-          echo "Bağlantı portları dinleniyor..."
-          echo "• RDP (3389) hazır"
-          echo "• NoMachine (4000) hazır"
-          echo ""
-          echo "Bağlanmak için:"
-          echo "1. Windows: Remote Desktop -> ${{ env.PUBLIC_IP }}"
-          echo "2. veya NoMachine indir -> ${{ env.PUBLIC_IP }}:4000"
-          echo ""
+          echo "RDP aktif, bağlantı bekleniyor..."
+          echo " "
           
-          # 55 dakika bekle (max 60)
-          sleep 3300
-          echo "⏰ Zaman doluyor, 5 dakika kaldı..."
+          # Süre sayacı
+          COUNTER=0
+          MAX_MINUTES=55  # 5 dakika önceden uyarı ver
+          
+          while [ $COUNTER -lt $MAX_MINUTES ]; do
+              MINUTES=$((MAX_MINUTES - COUNTER))
+              echo -ne "\r🟢 RDP AKTİF - Kalan süre: ${MINUTES} dakika | Bağlan: mstsc /v:${{ env.PUBLIC_IP }}"
+              
+              # Her dakika bağlantı kontrolü
+              if [ $((COUNTER % 5)) -eq 0 ]; then
+                  echo ""
+                  echo "   ↳ Bağlantı testi:"
+                  sudo systemctl status xrdp --no-pager | grep -E "(active|running)" || echo "   ↳ Servis durdurulmuş"
+              fi
+              
+              sleep 60
+              COUNTER=$((COUNTER + 1))
+          done
+          
+          echo ""
+          echo "⏰ Zaman dolmak üzere! 5 dakika kaldı..."
+
+      - name: Temizlik (Opsiyonel)
+        if: always()
+        run: |
+          echo "Temizlik yapılıyor..."
+          sudo pkill -9 xrdp || true
+          sudo systemctl stop lightdm || true
+          echo "✅ Temizlik tamamlandı"
