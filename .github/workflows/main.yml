@@ -1,119 +1,138 @@
-name: Windows RDP (Basit)
+name: Ubuntu RDP (Xfce)
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp-setup:
-    runs-on: windows-latest
-    timeout-minutes: 30  # Maksimum 30 dakika
+  ubuntu-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
 
     steps:
-      - name: RDP'yi Aktif Et
+      - name: Sistem Güncelle
         run: |
-          # Enable Remote Desktop
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
-          
-          # Allow RDP in firewall
-          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-          
-          # Restart service
-          Restart-Service TermService -Force
+          sudo apt-get update
+          sudo apt-get upgrade -y
 
-      - name: Kullanıcı Oluştur ve Şifre Belirle
+      - name: Xfce Masaüstü Kur
         run: |
-          # Basit şifre (test için)
-          $Password = "Password123!"
-          $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+          # Xfce (hafif masaüstü) kur
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-goodies
           
-          # Kullanıcı oluştur
-          New-LocalUser -Name "GHRunner" -Password $SecurePassword -PasswordNeverExpires
-          
-          # Admin yap
-          Add-LocalGroupMember -Group "Administrators" -Member "GHRunner"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "GHRunner"
-          
-          # Enable the account
-          Enable-LocalUser -Name "GHRunner"
-          
-          # Değişkenlere kaydet
-          echo "RDP_USER=GHRunner" >> $env:GITHUB_ENV
-          echo "RDP_PASS=Password123!" >> $env:GITHUB_ENV
+          # Ek araçlar
+          sudo apt-get install -y firefox xterm nano
 
-      - name: IP Adresini Öğren
+      - name: RDP Sunucusu Kur (xrdp)
         run: |
-          # Network bilgilerini al
-          $ipInfo = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike "127.*"} | Select-Object -First 1
-          $publicIP = (Invoke-RestMethod -Uri "https://api.ipify.org").Trim()
+          # xrdp kur
+          sudo apt-get install -y xrdp
           
-          echo "LOCAL_IP=$($ipInfo.IPAddress)" >> $env:GITHUB_ENV
-          echo "PUBLIC_IP=$publicIP" >> $env:GITHUB_ENV
+          # xrdp servisini başlat
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
           
-          Write-Host "Local IP: $($ipInfo.IPAddress)"
-          Write-Host "Public IP: $publicIP"
+          # Port aç (3389)
+          sudo ufw allow 3389/tcp
+          sudo ufw --force enable
 
-      - name: Bağlantıyı Test Et
+      - name: Xrdp Ayarlarını Düzelt
         run: |
-          # Port testi
-          $test = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389
-          if ($test.TcpTestSucceeded) {
-              Write-Host "✅ RDP Portu Açık: 3389"
-          } else {
-              Write-Host "❌ RDP Portu Kapalı"
-              exit 1
-          }
+          # Xrdp için Xfce oturumu ayarla
+          echo "xfce4-session" > ~/.xsession
+          sudo chmod +x ~/.xsession
           
-          # Kullanıcı kontrolü
-          $userExists = Get-LocalUser -Name "GHRunner" -ErrorAction SilentlyContinue
-          if ($userExists) {
-              Write-Host "✅ Kullanıcı Oluşturuldu: GHRunner"
-          }
+          # Xrdp config düzenle
+          sudo sed -i 's/use_vsock=true/use_vsock=false/g' /etc/xrdp/xrdp.ini
+          echo "exec startxfce4" | sudo tee -a /etc/xrdp/startwm.sh
+
+      - name: Kullanıcı ve Şifre Ayarla
+        run: |
+          # Varsayılan ubuntu kullanıcısının şifresini değiştir
+          echo "ubuntu:ubuntu123" | sudo chpasswd
+          
+          # Veya yeni kullanıcı oluştur
+          sudo useradd -m -s /bin/bash ghuser
+          echo "ghuser:github123" | sudo chpasswd
+          sudo usermod -aG sudo ghuser
+          
+          echo "USER1=ubuntu" >> $env:GITHUB_ENV
+          echo "PASS1=ubuntu123" >> $env:GITHUB_ENV
+          echo "USER2=ghuser" >> $env:GITHUB_ENV
+          echo "PASS2=github123" >> $env:GITHUB_ENV
+
+      - name: NoMachine Kur (Alternatif - Daha İyi)
+        run: |
+          # NoMachine indir ve kur
+          wget https://download.nomachine.com/download/8.10/Linux/nomachine_8.10.1_1_amd64.deb
+          sudo dpkg -i nomachine_*.deb || sudo apt-get install -f -y
+          
+          # NoMachine servisini başlat
+          sudo systemctl start nxserver
+          
+          echo "NOMACHINE_INSTALLED=true" >> $env:GITHUB_ENV
+
+      - name: IP ve Bağlantı Bilgilerini Al
+        run: |
+          # IP adreslerini al
+          PRIVATE_IP=$(hostname -I | awk '{print $1}')
+          PUBLIC_IP=$(curl -s ifconfig.me)
+          
+          echo "PRIVATE_IP=$PRIVATE_IP" >> $env:GITHUB_ENV
+          echo "PUBLIC_IP=$PUBLIC_IP" >> $env:GITHUB_ENV
+          
+          # Bağlantı portlarını göster
+          echo "RDP_PORT=3389" >> $env:GITHUB_ENV
+          echo "NOMACHINE_PORT=4000" >> $env:GITHUB_ENV
+
+      - name: Display Başlat
+        run: |
+          # Display manager başlat
+          sudo systemctl start lightdm || true
+          
+          # X server başlat
+          startxfce4 &
+          sleep 5
 
       - name: Bağlantı Bilgilerini Göster
         run: |
-          Write-Host ""
-          Write-Host "╔══════════════════════════════════════════╗"
-          Write-Host "║        WINDOWS RDP BAĞLANTI BİLGİLERİ    ║"
-          Write-Host "╠══════════════════════════════════════════╣"
-          Write-Host "║ IP Adresi : $env:PUBLIC_IP"
-          Write-Host "║ Kullanıcı : $env:RDP_USER"
-          Write-Host "║ Şifre     : $env:RDP_PASS"
-          Write-Host "║ Port      : 3389"
-          Write-Host "╠══════════════════════════════════════════╣"
-          Write-Host "║ Windows'ta bağlanmak için:"
-          Write-Host "║ 1. mstsc yazıp çalıştır"
-          Write-Host "║ 2. IP: $env:PUBLIC_IP"
-          Write-Host "║ 3. Kullanıcı: $env:RDP_USER"
-          Write-Host "║ 4. Şifre: $env:RDP_PASS"
-          Write-Host "╚══════════════════════════════════════════╝"
-          Write-Host ""
-          Write-Host "⚠️  DİKKAT: Bu PUBLIC IP üzerinden erişilebilir!"
-          Write-Host "⚠️  Sadece test amaçlı kullanın!"
-          Write-Host "⚠️  İş bitince workflow'u DURDURUN!"
+          echo " "
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║            UBUNTU RDP BAĞLANTI BİLGİLERİ        ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║ 🌍 Public IP: ${{ env.PUBLIC_IP }}"
+          echo "║ 🏠 Private IP: ${{ env.PRIVATE_IP }}"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║ 📌 SEÇENEK 1: XRDP (Windows RDP ile)"
+          echo "║   • Port: 3389"
+          echo "║   • Kullanıcı: ubuntu"
+          echo "║   • Şifre: ubuntu123"
+          echo "║ "
+          echo "║ 📌 SEÇENEK 2: NoMachine (Daha Hızlı)"
+          echo "║   • Port: 4000"
+          echo "║   • Kullanıcı: ghuser"
+          echo "║   • Şifre: github123"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║ 🛠️  Komutlar:"
+          echo "║   • Firefox aç: firefox"
+          echo "║   • Terminal: ctrl+alt+t"
+          echo "║   • Çıkış: exit"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo " "
+          echo "⚠️  DİKKAT: Runner 60 dakika sonra otomatik kapanır!"
+          echo "⚠️  İşin bitince workflow'u DURDUR!"
 
-      - name: Bağlantı Bekleme (20 Dakika)
+      - name: Bağlantıyı Aktif Tut
         run: |
-          $counter = 0
-          $maxMinutes = 20
+          # Bağlantıları dinle
+          echo "Bağlantı portları dinleniyor..."
+          echo "• RDP (3389) hazır"
+          echo "• NoMachine (4000) hazır"
+          echo ""
+          echo "Bağlanmak için:"
+          echo "1. Windows: Remote Desktop -> ${{ env.PUBLIC_IP }}"
+          echo "2. veya NoMachine indir -> ${{ env.PUBLIC_IP }}:4000"
+          echo ""
           
-          while ($counter -lt $maxMinutes) {
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP aktif - $counter/$maxMinutes dakika"
-              Write-Host "Bağlanmak için: mstsc → $env:PUBLIC_IP"
-              Write-Host "Durdurmak için: GitHub'da 'Cancel workflow'"
-              Write-Host "----------------------------------------"
-              
-              Start-Sleep -Seconds 60
-              $counter++
-          }
-          
-          Write-Host "⏰ Zaman doldu, RDP kapanıyor..."
-
-      - name: Temizlik
-        if: always()
-        run: |
-          Write-Host "Temizlik yapılıyor..."
-          # Kullanıcıyı sil
-          Remove-LocalUser -Name "GHRunner" -ErrorAction SilentlyContinue
-          # RDP'yi kapat
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 1
-          Write-Host "✅ Temizlik tamamlandı"
+          # 55 dakika bekle (max 60)
+          sleep 3300
+          echo "⏰ Zaman doluyor, 5 dakika kaldı..."
