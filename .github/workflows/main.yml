@@ -1,87 +1,119 @@
-name: Basit Windows RDP
+name: Windows RDP (Basit)
 
 on:
   workflow_dispatch:
 
 jobs:
-  setup-rdp:
+  rdp-setup:
     runs-on: windows-latest
-    timeout-minutes: 60  # Geçici kullanım için
+    timeout-minutes: 30  # Maksimum 30 dakika
 
     steps:
-      - name: Basit RDP Kurulumu
+      - name: RDP'yi Aktif Et
         run: |
-          # RDP'yi etkinleştir
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "fDenyTSConnections" -Value 0 -Force
+          # Enable Remote Desktop
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           
-          # Güvenlik duvarını aç
-          netsh advfirewall firewall add rule name="Open RDP" dir=in action=allow protocol=TCP localport=3389
+          # Allow RDP in firewall
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           
-          # RDP servisini yeniden başlat
-          Restart-Service -Name TermService -Force
+          # Restart service
+          Restart-Service TermService -Force
 
-      - name: Kullanıcı Oluştur
+      - name: Kullanıcı Oluştur ve Şifre Belirle
         run: |
-          $password = "TempPass123!"
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "GitHubUser" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "GitHubUser"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "GitHubUser"
+          # Basit şifre (test için)
+          $Password = "Password123!"
+          $SecurePassword = ConvertTo-SecureString $Password -AsPlainText -Force
           
-          echo "USER=GitHubUser" >> $env:GITHUB_ENV
-          echo "PASS=$password" >> $env:GITHUB_ENV
+          # Kullanıcı oluştur
+          New-LocalUser -Name "GHRunner" -Password $SecurePassword -PasswordNeverExpires
+          
+          # Admin yap
+          Add-LocalGroupMember -Group "Administrators" -Member "GHRunner"
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "GHRunner"
+          
+          # Enable the account
+          Enable-LocalUser -Name "GHRunner"
+          
+          # Değişkenlere kaydet
+          echo "RDP_USER=GHRunner" >> $env:GITHUB_ENV
+          echo "RDP_PASS=Password123!" >> $env:GITHUB_ENV
 
-      - name: IP Adresini Al
+      - name: IP Adresini Öğren
         run: |
-          # Public IP'yi al (bu GÜVENLİ DEĞİL!)
-          $ip = (Invoke-RestMethod -Uri "https://api.ipify.org").Trim()
-          echo "PUBLIC_IP=$ip" >> $env:GITHUB_ENV
+          # Network bilgilerini al
+          $ipInfo = Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notlike "127.*"} | Select-Object -First 1
+          $publicIP = (Invoke-RestMethod -Uri "https://api.ipify.org").Trim()
           
-          # Yerel IP'yi de göster
-          $localIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.InterfaceAlias -notlike "*Loopback*"}).IPAddress | Select-Object -First 1
-          echo "LOCAL_IP=$localIP" >> $env:GITHUB_ENV
+          echo "LOCAL_IP=$($ipInfo.IPAddress)" >> $env:GITHUB_ENV
+          echo "PUBLIC_IP=$publicIP" >> $env:GITHUB_ENV
+          
+          Write-Host "Local IP: $($ipInfo.IPAddress)"
+          Write-Host "Public IP: $publicIP"
+
+      - name: Bağlantıyı Test Et
+        run: |
+          # Port testi
+          $test = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389
+          if ($test.TcpTestSucceeded) {
+              Write-Host "✅ RDP Portu Açık: 3389"
+          } else {
+              Write-Host "❌ RDP Portu Kapalı"
+              exit 1
+          }
+          
+          # Kullanıcı kontrolü
+          $userExists = Get-LocalUser -Name "GHRunner" -ErrorAction SilentlyContinue
+          if ($userExists) {
+              Write-Host "✅ Kullanıcı Oluşturuldu: GHRunner"
+          }
 
       - name: Bağlantı Bilgilerini Göster
         run: |
-          Write-Host "=============================================="
-          Write-Host "RDP BAĞLANTI BİLGİLERİ"
-          Write-Host "=============================================="
-          Write-Host "Public IP: $env:PUBLIC_IP"
-          Write-Host "Yerel IP: $env:LOCAL_IP"
-          Write-Host "Kullanıcı: $env:USER"
-          Write-Host "Şifre: $env:PASS"
-          Write-Host "Port: 3389"
           Write-Host ""
-          Write-Host "UYARI: Bu public IP ile erişilebilir!"
-          Write-Host "Sadece test için kullanın."
-          Write-Host "=============================================="
+          Write-Host "╔══════════════════════════════════════════╗"
+          Write-Host "║        WINDOWS RDP BAĞLANTI BİLGİLERİ    ║"
+          Write-Host "╠══════════════════════════════════════════╣"
+          Write-Host "║ IP Adresi : $env:PUBLIC_IP"
+          Write-Host "║ Kullanıcı : $env:RDP_USER"
+          Write-Host "║ Şifre     : $env:RDP_PASS"
+          Write-Host "║ Port      : 3389"
+          Write-Host "╠══════════════════════════════════════════╣"
+          Write-Host "║ Windows'ta bağlanmak için:"
+          Write-Host "║ 1. mstsc yazıp çalıştır"
+          Write-Host "║ 2. IP: $env:PUBLIC_IP"
+          Write-Host "║ 3. Kullanıcı: $env:RDP_USER"
+          Write-Host "║ 4. Şifre: $env:RDP_PASS"
+          Write-Host "╚══════════════════════════════════════════╝"
+          Write-Host ""
+          Write-Host "⚠️  DİKKAT: Bu PUBLIC IP üzerinden erişilebilir!"
+          Write-Host "⚠️  Sadece test amaçlı kullanın!"
+          Write-Host "⚠️  İş bitince workflow'u DURDURUN!"
+
+      - name: Bağlantı Bekleme (20 Dakika)
+        run: |
+          $counter = 0
+          $maxMinutes = 20
           
-          # Bağlantıyı test et
-          Write-Host "`nBağlantı testi yapılıyor..."
-          $test = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389
-          if ($test.TcpTestSucceeded) {
-              Write-Host "✓ RDP portu açık"
-          } else {
-              Write-Host "✗ RDP portu kapalı"
+          while ($counter -lt $maxMinutes) {
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] RDP aktif - $counter/$maxMinutes dakika"
+              Write-Host "Bağlanmak için: mstsc → $env:PUBLIC_IP"
+              Write-Host "Durdurmak için: GitHub'da 'Cancel workflow'"
+              Write-Host "----------------------------------------"
+              
+              Start-Sleep -Seconds 60
+              $counter++
           }
-
-      - name: Bekle (Bağlantı İçin)
-        run: |
-          Write-Host "`n45 dakika boyunca RDP açık kalacak..."
-          Write-Host "Bağlanmak için: mstsc -> $env:PUBLIC_IP"
-          Write-Host "İş akışını durdurarak kapatın."
           
-          # 45 dakika bekle
-          Start-Sleep -Seconds 2700
+          Write-Host "⏰ Zaman doldu, RDP kapanıyor..."
 
-      - name: Temizlik (Otomatik)
+      - name: Temizlik
+        if: always()
         run: |
-          Write-Host "RDP kapatılıyor..."
-          # RDP'yi kapat
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                           -Name "fDenyTSConnections" -Value 1 -Force
-          # Güvenlik duvarı kuralını sil
-          netsh advfirewall firewall delete rule name="Open RDP"
+          Write-Host "Temizlik yapılıyor..."
           # Kullanıcıyı sil
-          Remove-LocalUser -Name "GitHubUser" -ErrorAction SilentlyContinue
+          Remove-LocalUser -Name "GHRunner" -ErrorAction SilentlyContinue
+          # RDP'yi kapat
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 1
+          Write-Host "✅ Temizlik tamamlandı"
