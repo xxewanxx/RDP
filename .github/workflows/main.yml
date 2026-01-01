@@ -1,140 +1,235 @@
-name: Ubuntu RDP (Clean)
+name: Ubuntu RDP (Çalışan)
 
 on:
   workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Çalışma süresi (dakika)'
+        required: false
+        default: '30'
 
 jobs:
   ubuntu-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ github.event.inputs.duration || 30 }}
 
     steps:
-      - name: Temel Paketleri Kur
+      - name: Güncelle ve GUI Kur
         run: |
           sudo apt-get update
-          # Sadece gerekli paketleri kur
+          sudo apt-get install -y software-properties-common
+          sudo add-apt-repository universe -y
+          
+          # Minimum GUI kur
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
             xfce4 \
+            xfce4-goodies \
             xrdp \
             firefox \
-            xterm \
-            sudo
+            sudo \
+            net-tools
 
       - name: RDP Kullanıcısı Oluştur
         run: |
+          # Var olan kullanıcıyı sil
+          sudo deluser githubuser --remove-home 2>/dev/null || true
+          
           # Yeni kullanıcı oluştur
           sudo useradd -m -s /bin/bash -G sudo githubuser
           echo "githubuser:github123" | sudo chpasswd
           
           # xrdp için oturum ayarla
-          echo 'xfce4-session' | sudo tee /home/githubuser/.xsession
+          sudo bash -c 'echo "xfce4-session" > /home/githubuser/.xsession'
           sudo chown githubuser:githubuser /home/githubuser/.xsession
+          sudo chmod +x /home/githubuser/.xsession
           
           echo "RDP_USER=githubuser" >> $env:GITHUB_ENV
           echo "RDP_PASS=github123" >> $env:GITHUB_ENV
 
-      - name: XRDP Yapılandır
+      - name: XRDP Ayarla
         run: |
-          # xrdp config'ini düzenle
-          sudo sed -i.bak 's/username=ask/username=githubuser/' /etc/xrdp/xrdp.ini
-          sudo sed -i 's/password=ask/password=github123/' /etc/xrdp/xrdp.ini
+          # xrdp config'i düzenle
+          sudo sed -i.bak 's/port=3389/port=3389\nusername=githubuser\npassword=github123/' /etc/xrdp/xrdp.ini
           
-          # xrdp'yi başlat
-          sudo systemctl enable --now xrdp
+          # xrdp servisini başlat
+          sudo systemctl start xrdp
+          sudo systemctl enable xrdp
           
-          # Port aç
-          sudo ufw allow 3389/tcp 2>/dev/null || true
+          # Firewall ayarla
+          sudo ufw disable 2>/dev/null || true
+          sudo iptables -A INPUT -p tcp --dport 3389 -j ACCEPT
+
+      - name: Otomatik Login Ayarla
+        run: |
+          # Otomatik login için
+          sudo mkdir -p /etc/lightdm/lightdm.conf.d
+          sudo tee /etc/lightdm/lightdm.conf.d/50-autologin.conf << EOF
+          [Seat:*]
+          autologin-user=githubuser
+          autologin-user-timeout=0
+          EOF
 
       - name: IP Bilgilerini Al
         run: |
-          # IP adresini al
-          IP_ADDR=$(curl -s icanhazip.com || curl -s ifconfig.me || echo "IP_ALINAMADI")
-          echo "RDP_IP=$IP_ADDR" >> $env:GITHUB_ENV
+          # Public IP
+          PUBLIC_IP=$(curl -4 -s icanhazip.com || curl -4 -s ifconfig.me || curl -4 -s ipinfo.io/ip || echo "IP_ALINAMADI")
           
           # Local IP
-          LOCAL_IP=$(hostname -I | awk '{print $1}')
+          LOCAL_IP=$(hostname -I | awk '{print $1}' | head -1)
+          
+          echo "PUBLIC_IP=$PUBLIC_IP" >> $env:GITHUB_ENV
           echo "LOCAL_IP=$LOCAL_IP" >> $env:GITHUB_ENV
-
-      - name: Bağlantı Testi Yap
-        run: |
-          echo "=== Sistem Durumu ==="
-          # xrdp çalışıyor mu?
-          sudo systemctl status xrdp --no-pager | head -5
           
-          # Port dinleniyor mu?
-          echo "Port durumu:"
-          sudo netstat -tulpn | grep :3389 || echo "3389 portu dinlenmiyor"
+          echo "🔍 IP Adresleri:"
+          echo "   Public: $PUBLIC_IP"
+          echo "   Local: $LOCAL_IP"
+
+      - name: Servisleri Kontrol Et
+        run: |
+          echo "🔧 Sistem Kontrolü:"
+          echo "=================="
           
-          # Kullanıcı var mı?
-          echo "Kullanıcı kontrolü:"
-          id githubuser
+          # xrdp durumu
+          echo "1. XRDP Servisi:"
+          sudo systemctl is-active xrdp && echo "   ✅ Aktif" || echo "   ❌ Pasif"
+          
+          # Port kontrolü
+          echo "2. Port 3389:"
+          sudo netstat -tulpn | grep :3389 && echo "   ✅ Dinleniyor" || echo "   ❌ Kapalı"
+          
+          # Kullanıcı kontrolü
+          echo "3. Kullanıcı:"
+          id githubuser && echo "   ✅ Oluşturuldu" || echo "   ❌ Oluşturulamadı"
+          
+          echo "=================="
 
-      - name: CMD Bağlantı Komutu Üret
+      - name: Windows Bağlantı Scripti
         run: |
-          echo " "
-          echo "=============================================="
-          echo "           WINDOWS CMD BAĞLANTISI"
-          echo "=============================================="
-          echo " "
-          echo "💻 1. CMD'yi aç (Windows+R -> cmd):"
-          echo " "
-          echo "📝 2. Şu komutu kopyala-yapıştır:"
-          echo " "
-          echo "mstsc /v:${{ env.RDP_IP }}"
-          echo " "
-          echo "🔑 3. Giriş bilgileri:"
-          echo "   Kullanıcı: ${{ env.RDP_USER }}"
-          echo "   Şifre: ${{ env.RDP_PASS }}"
-          echo " "
-          echo "🔄 VEYA tek komut:"
-          echo "cmdkey /generic:${{ env.RDP_IP }} /user:${{ env.RDP_USER }} /pass:${{ env.RDP_PASS }} && mstsc /v:${{ env.RDP_IP }}"
-          echo " "
-          echo "=============================================="
-          echo "🌍 IP: ${{ env.RDP_IP }}"
-          echo "🏠 Local IP: ${{ env.LOCAL_IP }}"
-          echo "⏰ Süre: 30 dakika"
-          echo "=============================================="
-
-      - name: Windows Batch Dosyası Oluştur
-        run: |
-          # Windows için otomatik bağlantı scripti
-          cat > connect_rdp.bat << 'EOF'
+          # PowerShell scripti oluştur
+          cat > connect.ps1 << EOF
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host "      UBUNTU RDP BAĞLANTI SCRIPTI      " -ForegroundColor Yellow
+          Write-Host "========================================" -ForegroundColor Cyan
+          Write-Host ""
+          Write-Host "🌍 IP Adresi: ${{ env.PUBLIC_IP }}" -ForegroundColor Green
+          Write-Host "👤 Kullanıcı: ${{ env.RDP_USER }}" -ForegroundColor Green
+          Write-Host "🔐 Şifre    : ${{ env.RDP_PASS }}" -ForegroundColor Green
+          Write-Host "🔌 Port     : 3389" -ForegroundColor Green
+          Write-Host ""
+          Write-Host "Bağlanıyor..." -ForegroundColor Magenta
+          Write-Host ""
+          
+          # Credential kaydet
+          cmdkey /generic:"${{ env.PUBLIC_IP }}" /user:"${{ env.RDP_USER }}" /pass:"${{ env.RDP_PASS }}"
+          
+          # RDP başlat
+          mstsc /v:"${{ env.PUBLIC_IP }}" /f
+          
+          Write-Host ""
+          Write-Host "✅ Bağlantı başlatıldı!" -ForegroundColor Green
+          Write-Host "========================================" -ForegroundColor Cyan
+          EOF
+          
+          # Batch scripti oluştur
+          cat > connect.bat << 'EOF'
           @echo off
           chcp 65001 >nul
-          echo ==================================
-          echo    UBUNTU RDP BAĞLANTI SCRIPTI
-          echo ==================================
+          echo ========================================
+          echo      UBUNTU RDP BAĞLANTI SCRIPTI
+          echo ========================================
           echo.
-          echo IP: ${{ env.RDP_IP }}
-          echo Kullanici: ${{ env.RDP_USER }}
-          echo Sifre: ${{ env.RDP_PASS }}
+          echo IP        : ${{ env.PUBLIC_IP }}
+          echo Kullanici : ${{ env.RDP_USER }}
+          echo Sifre     : ${{ env.RDP_PASS }}
+          echo Port      : 3389
           echo.
           echo Baglaniyor...
           echo.
           
-          rem Credential kaydet
-          cmdkey /generic:${{ env.RDP_IP }} /user:${{ env.RDP_USER }} /pass:${{ env.RDP_PASS }}
-          
-          rem RDP baslat
-          mstsc /v:${{ env.RDP_IP }} /f
+          cmdkey /generic:"${{ env.PUBLIC_IP }}" /user:"${{ env.RDP_USER }}" /pass:"${{ env.RDP_PASS }}"
+          timeout /t 2 /nobreak >nul
+          mstsc /v:"${{ env.PUBLIC_IP }}" /f
           
           pause
           EOF
           
-          echo "Windows için 'connect_rdp.bat' dosyası oluşturuldu"
+          echo "📁 Scriptler oluşturuldu:"
+          echo "   - connect.ps1 (PowerShell)"
+          echo "   - connect.bat (CMD)"
 
-      - name: RDP Aktif Tut
+      - name: Bağlantı Bilgilerini Göster
         run: |
-          echo "✅ RDP HAZIR! Bağlanmak için 25 dakika süren var..."
+          DURATION=${{ github.event.inputs.duration || 30 }}
+          echo " "
+          echo "╔══════════════════════════════════════════════════╗"
+          echo "║            🚀 UBUNTU RDP HAZIR!                  ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║                                                  ║"
+          echo "║  🌍 PUBLIC IP : ${{ env.PUBLIC_IP }}"
+          echo "║  🏠 LOCAL IP  : ${{ env.LOCAL_IP }}"
+          echo "║  👤 KULLANICI : ${{ env.RDP_USER }}"
+          echo "║  🔐 ŞİFRE     : ${{ env.RDP_PASS }}"
+          echo "║  🔌 PORT      : 3389"
+          echo "║  ⏰ SÜRE      : ${DURATION} dakika"
+          echo "║                                                  ║"
+          echo "╠══════════════════════════════════════════════════╣"
+          echo "║          📝 CMD'DE ÇALIŞTIR:                     ║"
+          echo "║                                                  ║"
+          echo "║  mstsc /v:${{ env.PUBLIC_IP }}                   ║"
+          echo "║                                                  ║"
+          echo "║  veya                                           ║"
+          echo "║                                                  ║"
+          echo "║  cmdkey /generic:${{ env.PUBLIC_IP }} ^          ║"
+          echo "║      /user:${{ env.RDP_USER }} ^                 ║"
+          echo "║      /pass:${{ env.RDP_PASS }} && ^              ║"
+          echo "║      mstsc /v:${{ env.PUBLIC_IP }}               ║"
+          echo "║                                                  ║"
+          echo "╚══════════════════════════════════════════════════╝"
+          echo " "
+          echo "⚠️  NOT: İşin bitince GitHub'da 'Cancel workflow' butonuna bas!"
+
+      - name: RDP'yi Aktif Tut
+        run: |
+          DURATION=$(( ${{ github.event.inputs.duration || 30 }} * 60 ))
+          echo "⏳ RDP $((DURATION/60)) dakika boyunca aktif..."
           echo " "
           
-          # Basit timer
-          for i in {1..1500}; do
-              mins=$(( (1500 - i) / 60 ))
-              secs=$(( (1500 - i) % 60 ))
-              echo -ne "\r🟢 RDP AKTİF | Kalan: ${mins}d ${secs}s | Bağlan: mstsc /v:${{ env.RDP_IP }}"
+          COUNTER=0
+          while [ $COUNTER -lt $DURATION ]; do
+              REMAINING=$((DURATION - COUNTER))
+              MINS=$((REMAINING / 60))
+              SECS=$((REMAINING % 60))
+              
+              # Her 10 saniyede bir güncelle
+              if [ $((COUNTER % 10)) -eq 0 ]; then
+                  echo -ne "\r🟢 RDP AKTİF | Kalan: ${MINS}:${SECS} | Bağlan: mstsc /v:${{ env.PUBLIC_IP }}"
+              fi
+              
+              # Her dakika sistem durumunu kontrol et
+              if [ $((COUNTER % 60)) -eq 0 ]; then
+                  echo ""
+                  echo "   ↳ Sistem durumu:"
+                  sudo systemctl is-active xrdp && echo "      ✅ xrdp: Aktif" || echo "      ❌ xrdp: Pasif"
+                  sudo netstat -tulpn | grep :3389 >/dev/null && echo "      ✅ Port 3389: Açık" || echo "      ❌ Port 3389: Kapalı"
+                  echo ""
+              fi
+              
               sleep 1
+              COUNTER=$((COUNTER + 1))
           done
           
           echo ""
-          echo "⏰ Süre doldu!"
+          echo "⏰ Zaman doldu! RDP kapanıyor..."
+
+      - name: Temizlik
+        if: always()
+        run: |
+          echo "🧹 Temizlik yapılıyor..."
+          # Servisleri durdur
+          sudo systemctl stop xrdp 2>/dev/null || true
+          sudo systemctl disable xrdp 2>/dev/null || true
+          # Kullanıcıyı sil
+          sudo deluser githubuser --remove-home 2>/dev/null || true
+          # Firewall kurallarını temizle
+          sudo iptables -D INPUT -p tcp --dport 3389 -j ACCEPT 2>/dev/null || true
+          echo "✅ Temizlik tamamlandı"
