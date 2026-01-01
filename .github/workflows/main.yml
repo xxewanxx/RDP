@@ -4,14 +4,22 @@ on:
   workflow_dispatch:
     inputs:
       duration:
-        description: 'Çalışma süresi (dakika)'
+        description: 'Çalışma süresi (dakika) - MAX 360'
         required: false
         default: '30'
+        type: choice
+        options:
+          - 15
+          - 30
+          - 60
+          - 120
+          - 180
+          - 360
 
 jobs:
   ubuntu-rdp:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ github.event.inputs.duration || 30 }}
+    timeout-minutes: ${{ github.event.inputs.duration }}
 
     steps:
       - name: Güncelle ve GUI Kur
@@ -59,16 +67,6 @@ jobs:
           sudo ufw disable 2>/dev/null || true
           sudo iptables -A INPUT -p tcp --dport 3389 -j ACCEPT
 
-      - name: Otomatik Login Ayarla
-        run: |
-          # Otomatik login için
-          sudo mkdir -p /etc/lightdm/lightdm.conf.d
-          sudo tee /etc/lightdm/lightdm.conf.d/50-autologin.conf << EOF
-          [Seat:*]
-          autologin-user=githubuser
-          autologin-user-timeout=0
-          EOF
-
       - name: IP Bilgilerini Al
         run: |
           # Public IP
@@ -103,60 +101,6 @@ jobs:
           
           echo "=================="
 
-      - name: Windows Bağlantı Scripti
-        run: |
-          # PowerShell scripti oluştur
-          cat > connect.ps1 << EOF
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host "      UBUNTU RDP BAĞLANTI SCRIPTI      " -ForegroundColor Yellow
-          Write-Host "========================================" -ForegroundColor Cyan
-          Write-Host ""
-          Write-Host "🌍 IP Adresi: ${{ env.PUBLIC_IP }}" -ForegroundColor Green
-          Write-Host "👤 Kullanıcı: ${{ env.RDP_USER }}" -ForegroundColor Green
-          Write-Host "🔐 Şifre    : ${{ env.RDP_PASS }}" -ForegroundColor Green
-          Write-Host "🔌 Port     : 3389" -ForegroundColor Green
-          Write-Host ""
-          Write-Host "Bağlanıyor..." -ForegroundColor Magenta
-          Write-Host ""
-          
-          # Credential kaydet
-          cmdkey /generic:"${{ env.PUBLIC_IP }}" /user:"${{ env.RDP_USER }}" /pass:"${{ env.RDP_PASS }}"
-          
-          # RDP başlat
-          mstsc /v:"${{ env.PUBLIC_IP }}" /f
-          
-          Write-Host ""
-          Write-Host "✅ Bağlantı başlatıldı!" -ForegroundColor Green
-          Write-Host "========================================" -ForegroundColor Cyan
-          EOF
-          
-          # Batch scripti oluştur
-          cat > connect.bat << 'EOF'
-          @echo off
-          chcp 65001 >nul
-          echo ========================================
-          echo      UBUNTU RDP BAĞLANTI SCRIPTI
-          echo ========================================
-          echo.
-          echo IP        : ${{ env.PUBLIC_IP }}
-          echo Kullanici : ${{ env.RDP_USER }}
-          echo Sifre     : ${{ env.RDP_PASS }}
-          echo Port      : 3389
-          echo.
-          echo Baglaniyor...
-          echo.
-          
-          cmdkey /generic:"${{ env.PUBLIC_IP }}" /user:"${{ env.RDP_USER }}" /pass:"${{ env.RDP_PASS }}"
-          timeout /t 2 /nobreak >nul
-          mstsc /v:"${{ env.PUBLIC_IP }}" /f
-          
-          pause
-          EOF
-          
-          echo "📁 Scriptler oluşturuldu:"
-          echo "   - connect.ps1 (PowerShell)"
-          echo "   - connect.bat (CMD)"
-
       - name: Bağlantı Bilgilerini Göster
         run: |
           DURATION=${{ github.event.inputs.duration || 30 }}
@@ -187,31 +131,37 @@ jobs:
           echo "╚══════════════════════════════════════════════════╝"
           echo " "
           echo "⚠️  NOT: İşin bitince GitHub'da 'Cancel workflow' butonuna bas!"
+          echo "💡 TİYO: Windows'ta bağlanmak için:"
+          echo "   1. Windows + R tuşlarına bas"
+          echo "   2. 'mstsc' yaz ve Enter'a bas"
+          echo "   3. Yukarıdaki IP'yi yapıştır"
+          echo "   4. Kullanıcı: ${{ env.RDP_USER }}"
+          echo "   5. Şifre: ${{ env.RDP_PASS }}"
 
       - name: RDP'yi Aktif Tut
         run: |
-          DURATION=$(( ${{ github.event.inputs.duration || 30 }} * 60 ))
-          echo "⏳ RDP $((DURATION/60)) dakika boyunca aktif..."
+          DURATION=${{ github.event.inputs.duration || 30 }}
+          TOTAL_SECONDS=$((DURATION * 60))
+          
+          echo "⏳ RDP ${DURATION} dakika boyunca aktif..."
+          echo "📡 Bağlanmak için: mstsc /v:${{ env.PUBLIC_IP }}"
           echo " "
           
           COUNTER=0
-          while [ $COUNTER -lt $DURATION ]; do
-              REMAINING=$((DURATION - COUNTER))
+          while [ $COUNTER -lt $TOTAL_SECONDS ]; do
+              REMAINING=$((TOTAL_SECONDS - COUNTER))
               MINS=$((REMAINING / 60))
               SECS=$((REMAINING % 60))
               
-              # Her 10 saniyede bir güncelle
-              if [ $((COUNTER % 10)) -eq 0 ]; then
-                  echo -ne "\r🟢 RDP AKTİF | Kalan: ${MINS}:${SECS} | Bağlan: mstsc /v:${{ env.PUBLIC_IP }}"
+              # Her 30 saniyede bir güncelle
+              if [ $((COUNTER % 30)) -eq 0 ]; then
+                  echo -ne "\r🟢 RDP AKTİF | Kalan: ${MINS}d ${SECS}s | IP: ${{ env.PUBLIC_IP }}"
               fi
               
-              # Her dakika sistem durumunu kontrol et
-              if [ $((COUNTER % 60)) -eq 0 ]; then
+              # Her 5 dakikada bir ping
+              if [ $((COUNTER % 300)) -eq 0 ]; then
                   echo ""
-                  echo "   ↳ Sistem durumu:"
-                  sudo systemctl is-active xrdp && echo "      ✅ xrdp: Aktif" || echo "      ❌ xrdp: Pasif"
-                  sudo netstat -tulpn | grep :3389 >/dev/null && echo "      ✅ Port 3389: Açık" || echo "      ❌ Port 3389: Kapalı"
-                  echo ""
+                  echo "   ↳ Sistem durumu: ✅"
               fi
               
               sleep 1
@@ -230,6 +180,4 @@ jobs:
           sudo systemctl disable xrdp 2>/dev/null || true
           # Kullanıcıyı sil
           sudo deluser githubuser --remove-home 2>/dev/null || true
-          # Firewall kurallarını temizle
-          sudo iptables -D INPUT -p tcp --dport 3389 -j ACCEPT 2>/dev/null || true
           echo "✅ Temizlik tamamlandı"
